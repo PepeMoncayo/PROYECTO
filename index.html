@@ -1823,6 +1823,44 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     alert('No se ha podido sincronizar con la base de datos (Supabase). El cambio se ve en la pantalla pero puede que no se haya guardado.\n\n' + err.message);
   }
 
+  // Autoguardado de la URL de vídeo (Partidos, Videoteca, Análisis): en cuanto
+  // se sale del campo, se guarda directamente en Supabase sin esperar a que
+  // se pulse el botón "Guardar" del formulario, y se muestra debajo si se ha
+  // guardado bien o si ha habido algún problema.
+  function activarAutoguardadoVideo(input, tabla, obtenerId, actualizarLocal){
+    var estado = document.createElement('div');
+    estado.style.cssText = 'font-size:12px;margin-top:4px;min-height:16px;';
+    input.insertAdjacentElement('afterend', estado);
+    var ultimoValorGuardado = null;
+
+    input.addEventListener('blur', function(){
+      var id = obtenerId();
+      if(id === null || id === undefined) return; // registro nuevo aún sin crear: se guarda con el botón "Guardar" normal
+      var valor = limpiarUrl(input.value);
+      input.value = valor;
+      if(valor === ultimoValorGuardado) return;
+
+      if(!supabaseDisponible){
+        estado.textContent = '⚠ Sin conexión con Supabase: se guardará al pulsar "Guardar".';
+        estado.style.color = '#B45309';
+        return;
+      }
+      estado.textContent = 'Guardando…';
+      estado.style.color = '#6b7280';
+      sbUpdate(tabla, id, { video: valor }).then(function(){
+        ultimoValorGuardado = valor;
+        actualizarLocal(valor);
+        estado.textContent = '✓ Vídeo guardado automáticamente';
+        estado.style.color = '#15803d';
+        setTimeout(function(){ if(estado.textContent.indexOf('✓') === 0) estado.textContent = ''; }, 2500);
+      }).catch(function(err){
+        console.error(err);
+        estado.textContent = '✗ No se ha podido guardar: ' + err.message;
+        estado.style.color = '#DC2626';
+      });
+    });
+  }
+
   // ===================== Helpers compartidos =====================
   function initialsFor(nombre){
     return nombre.trim().split(/\s+/).map(function(p){return p[0]||'';}).slice(0,2).join('').toUpperCase();
@@ -2756,6 +2794,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   var inpResultado = document.getElementById('inpResultado');
   var inpPlan = document.getElementById('inpPlan');
   var inpVideo = document.getElementById('inpVideo');
+  activarAutoguardadoVideo(inpVideo, 'partidos', function(){ return editingPartidoId; }, function(valor){
+    var p = partidos.find(function(x){ return x.id === editingPartidoId; });
+    if(p) p.video = valor;
+  });
 
   var planOverlay = document.getElementById('planOverlay');
   var planTitulo = document.getElementById('planTitulo');
@@ -3094,6 +3136,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   var inpTitulo = document.getElementById('inpTitulo');
   var inpCategoria = document.getElementById('inpCategoria');
   var inpVideoUrl = document.getElementById('inpVideoUrl');
+  activarAutoguardadoVideo(inpVideoUrl, 'videos', function(){ return editingVideoId; }, function(valor){
+    var v = videos.find(function(x){ return x.id === editingVideoId; });
+    if(v) v.video = valor;
+  });
   var inpVideoDesc = document.getElementById('inpVideoDesc');
   var inpVideoTareas = document.getElementById('inpVideoTareas');
   var videoFormError = document.getElementById('videoFormError');
@@ -4087,6 +4133,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   var inpPartidoAna = document.getElementById('inpPartidoAna');
   var inpJugadorAna = document.getElementById('inpJugadorAna');
   var inpVideoAna = document.getElementById('inpVideoAna');
+  activarAutoguardadoVideo(inpVideoAna, 'analisis', function(){ return editingAnalisisId; }, function(valor){
+    var a = analisis.find(function(x){ return x.id === editingAnalisisId; });
+    if(a) a.video = valor;
+  });
   var inpContenidoAna = document.getElementById('inpContenidoAna');
   var analisisFormError = document.getElementById('analisisFormError');
 
@@ -4550,6 +4600,84 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       supabaseDisponible = true;
     });
   }
+
+  // Botón "Guardar cambios" al final de cada apartado: además del guardado
+  // automático de cada ficha, esto fuerza a volver a enviar TODO lo que hay
+  // en esa sección a Supabase de una vez, por si algo se hubiera quedado sin
+  // sincronizar.
+  function crearBotonGuardarSeccion(idSeccion, texto, obtenerLista, tabla, mapearDatos){
+    var contenedor = document.getElementById(idSeccion);
+    if(!contenedor) return;
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;align-items:center;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid rgba(0,0,0,.08);flex-wrap:wrap;';
+    var boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = 'btn btn-save';
+    boton.textContent = '💾 ' + texto;
+    var estado = document.createElement('span');
+    estado.style.cssText = 'font-size:13px;';
+    wrap.appendChild(boton);
+    wrap.appendChild(estado);
+    contenedor.appendChild(wrap);
+
+    boton.addEventListener('click', function(){
+      var lista = obtenerLista();
+      if(!supabaseDisponible){
+        estado.textContent = '⚠ Sin conexión con Supabase: no se ha podido guardar.';
+        estado.style.color = '#B45309';
+        return;
+      }
+      if(!lista.length){
+        estado.textContent = 'No hay nada que guardar todavía.';
+        estado.style.color = '#6b7280';
+        return;
+      }
+      boton.disabled = true;
+      var hechos = 0, fallos = 0;
+      estado.textContent = 'Guardando 0 de ' + lista.length + '…';
+      estado.style.color = '#6b7280';
+      var promesas = lista.map(function(item){
+        return sbUpdate(tabla, item.id, mapearDatos(item)).then(function(){
+          hechos++;
+          estado.textContent = 'Guardando ' + hechos + ' de ' + lista.length + '…';
+        }).catch(function(err){
+          hechos++;
+          fallos++;
+          console.error('Error guardando', tabla, item.id, err);
+        });
+      });
+      Promise.all(promesas).then(function(){
+        boton.disabled = false;
+        if(fallos){
+          estado.textContent = '✗ ' + fallos + ' de ' + lista.length + ' no se han podido guardar. Comprueba tu conexión e inténtalo de nuevo.';
+          estado.style.color = '#DC2626';
+        } else {
+          estado.textContent = '✓ Todo guardado (' + lista.length + (lista.length === 1 ? ' elemento' : ' elementos') + ')';
+          estado.style.color = '#15803d';
+          setTimeout(function(){ if(estado.textContent.indexOf('✓') === 0) estado.textContent = ''; }, 3000);
+        }
+      });
+    });
+  }
+
+  crearBotonGuardarSeccion('seccionJugadores', 'Guardar cambios de Plantilla', function(){ return jugadores; }, 'jugadores', function(j){
+    return { nombre:j.nombre, dorsal:j.dorsal, demarcacion:j.demarcacion, foto:j.foto, observaciones:j.observaciones };
+  });
+  crearBotonGuardarSeccion('seccionPartidos', 'Guardar cambios de Partidos', function(){ return partidos; }, 'partidos', function(p){
+    return { competicion:p.competicion, local:p.local, visitante:p.visitante, resultado:p.resultado, plan:p.plan, video:p.video };
+  });
+  crearBotonGuardarSeccion('seccionVideoteca', 'Guardar cambios de Videoteca', function(){ return videos; }, 'videos', function(v){
+    return { titulo:v.titulo, categoria:v.categoria, video:v.video, descripcion:v.descripcion, tareas:v.tareas };
+  });
+  crearBotonGuardarSeccion('seccionUsuarios', 'Guardar cambios de Usuarios', function(){ return usuarios; }, 'usuarios', function(u){
+    return { nombre:u.nombre, email:u.email, rol:u.rol, telefono:u.telefono };
+  });
+  crearBotonGuardarSeccion('seccionScouting', 'Guardar cambios de Scouting', function(){ return scouts; }, 'scouts', function(s){
+    return { nombre:s.nombre, posicion:s.posicion, club:s.club, edad:s.edad, valoracion:s.valoracion, prioridad:s.prioridad, notas:s.notas };
+  });
+  crearBotonGuardarSeccion('seccionAnalisis', 'Guardar cambios de Análisis', function(){ return analisis; }, 'analisis', function(a){
+    return { titulo:a.titulo, tipo:a.tipo, fecha:a.fecha, partido_id:a.partidoId, jugador_id:a.jugadorId, video:a.video, contenido:a.contenido };
+  });
 
   cargarDatosSupabase().catch(function(err){
     console.error('No se pudo cargar Supabase, usando datos locales de ejemplo.', err);
